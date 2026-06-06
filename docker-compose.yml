@@ -46,17 +46,20 @@ services:
     networks:
       - ratelimiter
 
-# --- Added later: Redis backing store for the Go rate-check service ----------
-#  redis:
-#    image: redis:7-alpine
-#    container_name: redis
-#    restart: unless-stopped
-#    command: ["redis-server", "--appendonly", "no"]
-#    ports:
-#      - "6379:6379"   # host-run Go service reaches it at localhost:6379
-#    networks:
-#      - ratelimiter
-# -----------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "no"]
+    ports:
+      - "6379:6379"   # host-run Go service reaches it at localhost:6379
+    networks:
+      - ratelimiter
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
 networks:
   ratelimiter:
