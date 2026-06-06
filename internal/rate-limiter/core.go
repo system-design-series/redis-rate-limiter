@@ -1,29 +1,60 @@
 package RateLimiter
 
 import (
+	"context"
 	"net/http"
+	"strconv"
+
+	"RateLimiter/internal/config"
 
 	"github.com/labstack/echo/v5"
 )
 
-type Limiter struct {
-	algorithm string
-	// store, config, redis client, etc.
+// Bucket is the rate-limiting decision source. TokenBucket implements it;
+// tests provide a stub.
+type Bucket interface {
+	Allow(ctx context.Context, identity string) (Decision, error)
 }
 
-func New(algo string) *Limiter {
-	return &Limiter{
-		algorithm: "token_bucket",
-	}
+// Limiter adapts a Bucket to the HTTP rate-check endpoint and applies the
+// configured fail mode when the bucket errors.
+type Limiter struct {
+	bucket   Bucket
+	failMode config.FailMode
 }
-func (l *Limiter) RateCheck(context *echo.Context) error {
-	apiKey := context.Request().Header.Get("x-api-key")
-	isAllowed, err := l.validate(apiKey)
+
+func New(bucket Bucket, failMode config.FailMode) *Limiter {
+	return &Limiter{bucket: bucket, failMode: failMode}
+}
+
+// RateCheck consumes a token for the request's identity and returns 200 (allow)
+// or 429 (deny). On a bucket/Redis error it applies the fail mode.
+func (l *Limiter) RateCheck(c *echo.Context) error {
+	identity := c.Request().Header.Get("x-api-key")
+	if identity == "" {
+		identity = "anon"
+	}
+
+	dec, err := l.bucket.Allow(c.Request().Context(), identity)
 	if err != nil {
-		return err
+		if l.failMode == config.FailOpen {
+			return c.NoContent(http.StatusOK)
+		}
+		c.Response().Header().Set("Retry-After", "1")
+		return c.String(http.StatusTooManyRequests, "rate limit exceeded")
 	}
-	if !isAllowed {
-		return context.String(http.StatusTooManyRequests, "rate limit exceeded")
+
+	setRateLimitHeaders(c, dec)
+	if !dec.Allowed {
+		c.Response().Header().Set("Retry-After", strconv.Itoa(dec.RetryAfterSec))
+		return c.String(http.StatusTooManyRequests, "rate limit exceeded")
 	}
-	return nil
+	return c.NoContent(http.StatusOK)
+}
+
+func setRateLimitHeaders(c *echo.Context, d Decision) {
+	h := c.Response().Header()
+	h.Set("X-RateLimit-Limit", strconv.Itoa(d.Limit))
+	h.Set("X-RateLimit-Remaining", strconv.Itoa(d.Remaining))
+	h.Set("X-RateLimit-Reset", strconv.Itoa(d.ResetAfterSec))
 }

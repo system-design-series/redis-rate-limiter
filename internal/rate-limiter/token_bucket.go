@@ -1,87 +1,63 @@
 package RateLimiter
 
 import (
-	"errors"
-	"time"
+	"context"
+	_ "embed"
+	"math"
+
+	redis "github.com/redis/go-redis/v9"
 )
 
+//go:embed token_bucket.lua
+var tokenBucketScript string
+
+// Decision is the verdict for a single rate-check.
+type Decision struct {
+	Allowed       bool
+	Limit         int // capacity
+	Remaining     int // floor(tokens) after this request
+	ResetAfterSec int // seconds until the bucket is full again
+	RetryAfterSec int // seconds until >=1 token (meaningful when !Allowed)
+}
+
+// TokenBucket enforces a per-identity token bucket in Redis. State and the
+// refill+decrement are entirely server-side (Lua), so it is safe across many
+// concurrent callers and service replicas sharing one Redis.
 type TokenBucket struct {
-	apiKey          string
-	capacity        int // Max tokens
-	refillRate      int // Number of tokens added per second
-	availableTokens int // Current Available tokens
-	timestamp       int64
+	client     *redis.Client
+	script     *redis.Script
+	capacity   int
+	refillRate int
+	keyPrefix  string
 }
 
-var tokenBucket []*TokenBucket
-
-func NewTokenBucket(apiKey string, currentTimeInSecs int64) *TokenBucket {
-	// Search for existing bucket using api key
-	if apiKey == "" {
-		return nil
+// NewTokenBucket builds a bucket. capacity is the burst ceiling; refillRate is
+// tokens added per second; keyPrefix namespaces Redis keys.
+func NewTokenBucket(client *redis.Client, capacity, refillRate int, keyPrefix string) *TokenBucket {
+	return &TokenBucket{
+		client:     client,
+		script:     redis.NewScript(tokenBucketScript),
+		capacity:   capacity,
+		refillRate: refillRate,
+		keyPrefix:  keyPrefix,
 	}
-
-	for _, bucket := range tokenBucket {
-		if bucket.apiKey == apiKey {
-			return bucket
-		}
-	}
-
-	tokenBucket = append(tokenBucket, &TokenBucket{
-		apiKey:          apiKey,
-		capacity:        10,
-		refillRate:      1,
-		availableTokens: 10,
-		timestamp:       currentTimeInSecs,
-	})
-	return tokenBucket[len(tokenBucket)-1]
 }
 
-func (t *TokenBucket) AddTokens(tokensToAdd int) error {
-
-	if tokensToAdd <= 0 {
-		return errors.New("invalid tokens")
+// Allow consumes one token for identity and returns the decision. A non-nil
+// error means Redis was unreachable/failed; callers apply their fail mode.
+func (t *TokenBucket) Allow(ctx context.Context, identity string) (Decision, error) {
+	key := t.keyPrefix + ":tb:" + identity
+	const cost = 1
+	res, err := t.script.Run(ctx, t.client, []string{key}, t.capacity, t.refillRate, cost).Int64Slice()
+	if err != nil {
+		return Decision{}, err
 	}
-
-	if tokensToAdd > t.capacity {
-		tokensToAdd = t.capacity
-	}
-	// Check if availableTokens is zero and Reduce availableTokens by tokens
-
-	t.availableTokens += tokensToAdd
-	if t.availableTokens > t.capacity {
-		t.availableTokens = t.capacity
-	}
-	t.timestamp = time.Now().Unix()
-	return nil
-}
-
-func (t *TokenBucket) reduceAndValidateTokens(tokensToReduce int) error {
-	if tokensToReduce <= 0 {
-		return errors.New("invalid tokens")
-	}
-	if tokensToReduce > t.availableTokens {
-		return errors.New("tokens to reduce exceeds available tokens")
-	}
-	t.availableTokens -= tokensToReduce
-	return nil
-}
-func (l *Limiter) validate(apiKey string) (bool, error) {
-	// If key is present return existing bucket, else new bucket
-	currentTimeInSec := time.Now().Unix()
-	bucket := NewTokenBucket(apiKey, currentTimeInSec)
-	if bucket == nil {
-		return false, errors.New("invalid api key")
-	}
-	//timeDiff := int(currentTimeInSec - bucket.timestamp)
-	//tokenToAdd := timeDiff * bucket.refillRate
-	//err := bucket.AddTokens(tokenToAdd)
-	//if err != nil {
-	//	return false, err
-	//}
-	errInReduce := bucket.reduceAndValidateTokens(1)
-	if errInReduce != nil {
-		return false, errInReduce
-	}
-	return true, nil
+	// res = { allowed, remaining, retry_after_ms, reset_after_ms }
+	return Decision{
+		Allowed:       res[0] == 1,
+		Limit:         t.capacity,
+		Remaining:     int(res[1]),
+		RetryAfterSec: int(math.Ceil(float64(res[2]) / 1000.0)),
+		ResetAfterSec: int(math.Ceil(float64(res[3]) / 1000.0)),
+	}, nil
 }
