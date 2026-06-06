@@ -101,6 +101,7 @@ func TestAllow_ConcurrentNoOverAdmission(t *testing.T) {
 	const total = capacity * 4
 	var allowed int64
 	var wg sync.WaitGroup
+	start := time.Now()
 	for i := 0; i < total; i++ {
 		wg.Add(1)
 		go func() {
@@ -112,8 +113,12 @@ func TestAllow_ConcurrentNoOverAdmission(t *testing.T) {
 	}
 	wg.Wait()
 
+	elapsed := time.Since(start)
 	got := atomic.LoadInt64(&allowed)
-	if got < capacity || got > capacity+2 {
-		t.Errorf("allowed=%d, want in [%d, %d] (no over-admission)", got, capacity, capacity+2)
+	// EVALSHA is atomic, so over-admission is impossible by construction; the only
+	// legitimate extra admissions come from refill during the burst.
+	maxAllowed := int64(capacity) + int64(elapsed.Seconds())*int64(refill) + 1
+	if got < capacity || got > maxAllowed {
+		t.Errorf("allowed=%d, want in [%d, %d] (no over-admission; elapsed=%v)", got, capacity, maxAllowed, elapsed)
 	}
 }

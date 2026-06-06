@@ -36,7 +36,9 @@ if tokens >= cost then
 end
 
 -- Persist. Store as strings to preserve the fractional token count exactly.
-redis.call('HSET', key, 'tokens', tostring(tokens), 'ts_ms', tostring(now_ms))
+-- Pin numeric formats (don't depend on Lua's default %.14g): tokens keeps its
+-- fraction, ts_ms is an exact integer.
+redis.call('HSET', key, 'tokens', string.format('%.6f', tokens), 'ts_ms', string.format('%d', now_ms))
 
 -- TTL = time to refill to full, floored at 1s to avoid sub-tick eviction churn.
 local missing  = capacity - tokens

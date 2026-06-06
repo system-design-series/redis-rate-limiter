@@ -3,6 +3,7 @@ package RateLimiter
 import (
 	"context"
 	_ "embed"
+	"fmt"
 	"math"
 
 	redis "github.com/redis/go-redis/v9"
@@ -16,7 +17,7 @@ type Decision struct {
 	Allowed       bool
 	Limit         int // capacity
 	Remaining     int // floor(tokens) after this request
-	ResetAfterSec int // seconds until the bucket is full again
+	ResetAfterSec int // seconds until the bucket is full again (0 when already full)
 	RetryAfterSec int // seconds until >=1 token (meaningful when !Allowed)
 }
 
@@ -51,6 +52,9 @@ func (t *TokenBucket) Allow(ctx context.Context, identity string) (Decision, err
 	res, err := t.script.Run(ctx, t.client, []string{key}, t.capacity, t.refillRate, cost).Int64Slice()
 	if err != nil {
 		return Decision{}, err
+	}
+	if len(res) < 4 {
+		return Decision{}, fmt.Errorf("token bucket script returned %d values, want 4", len(res))
 	}
 	// res = { allowed, remaining, retry_after_ms, reset_after_ms }
 	return Decision{

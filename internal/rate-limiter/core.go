@@ -32,6 +32,9 @@ func New(bucket Bucket, failMode config.FailMode) *Limiter {
 func (l *Limiter) RateCheck(c *echo.Context) error {
 	identity := c.Request().Header.Get("x-api-key")
 	if identity == "" {
+		// Deliberate: unauthenticated callers share one "anon" bucket so keyless
+		// traffic is still rate-limited rather than bypassing the limiter. Note
+		// this is a single shared bucket (noisy-neighbor tradeoff for keyless calls).
 		identity = "anon"
 	}
 
