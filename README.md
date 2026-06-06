@@ -9,8 +9,6 @@ Built to sit in front of [Kong](https://konghq.com/), but it works with any gate
 ![Docker Compose](https://img.shields.io/badge/Docker-compose-2496ED?logo=docker&logoColor=white)
 ![Status](https://img.shields.io/badge/status-v1-blue)
 
-> Replace `github.com/your-org/RateLimiter` throughout with your real repository path.
-
 ---
 
 ## Why
@@ -67,8 +65,8 @@ Because steps 1–5 execute inside one server-side script, Redis runs them seria
 
 ```bash
 # 1. Clone
-git clone https://github.com/your-org/RateLimiter.git
-cd RateLimiter
+git clone https://github.com/system-design-series/redis-rate-limiter.git
+cd redis-rate-limiter
 
 # 2. Start Redis (or point REDIS_ADDR at your own)
 docker compose up -d redis
@@ -193,19 +191,18 @@ The rate-limiter integration tests exercise real Redis behavior (burst, refill, 
 │       └── token_bucket.lua          # atomic refill + decrement script
 ├── kong/kong.yml                     # Kong declarative config (pre-function check)
 ├── docker-compose.yml                # kong + redis
-├── docs/                             # HLD and design/implementation notes
 └── .env.example
 ```
 
 ## Roadmap
 
-Implemented in v1: token bucket, the `/api/rate-check` contract with rate-limit headers, fail mode, health and readiness probes, env config, and Kong wiring. Planned next, described in [`docs/HLD.md`](docs/HLD.md):
+Implemented in v1: token bucket, the `/api/rate-check` contract with rate-limit headers, fail mode, health and readiness probes, env config, and Kong wiring. Planned next:
 
 - Sliding-window algorithm, selectable via `RL_SCHEME`
 - `POST /check` with a JSON body carrying consumer, IP, and route identity
 - Per-route and per-consumer custom limits, and hot-reloadable config
 - Prometheus metrics and structured deny logs
-- A tighter hot-path timeout under fail-closed (see the deferred follow-up in [`docs/superpowers/specs/2026-06-07-redis-token-bucket-design.md`](docs/superpowers/specs/2026-06-07-redis-token-bucket-design.md))
+- A tighter hot-path timeout bound under fail-closed (fail fast instead of stalling when Redis is slow)
 
 ## License
 
