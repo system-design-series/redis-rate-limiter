@@ -1,0 +1,63 @@
+# Kong API Gateway (DB-less / declarative) in front of the Go rate-check service.
+#
+# Flow:  client -> Kong :8000 -> pre-function calls the rate-check service
+#        (http://host.docker.internal:8080/api/rate-check) -> on 200 proxy to
+#        https://example.com, on 429 short-circuit. See kong/kong.yml.
+#
+# The Go rate-check service runs on the HOST (GoLand) at localhost:8080; Kong
+# reaches it via host.docker.internal. Redis is added later (see bottom block).
+
+services:
+  kong:
+    image: kong:3.9
+    container_name: kong
+    restart: unless-stopped
+    environment:
+      KONG_DATABASE: "off"                       # DB-less mode
+      KONG_DECLARATIVE_CONFIG: /kong/kong.yml     # declarative config (mounted below)
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+      KONG_ADMIN_GUI_LISTEN: 0.0.0.0:8002         # Kong Manager UI
+      # Required so the pre-function plugin can require("resty.http") to make the
+      # outbound rate-check call. Kong's default sandbox blocks arbitrary require.
+      # Acceptable for local/dev; do NOT use "on" with untrusted config in prod.
+      KONG_UNTRUSTED_LUA: "on"
+      KONG_LOG_LEVEL: info
+      # Send logs to the container stdout/stderr so `docker compose logs` works.
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+    volumes:
+      - ./kong:/kong:ro
+    ports:
+      - "8000:8000"   # proxy (send client traffic here)
+      - "8001:8001"   # admin API
+      - "8002:8002"   # Kong Manager UI
+    extra_hosts:
+      # Lets the Kong container resolve host.docker.internal on Linux too.
+      # No-op on macOS/Windows where Docker provides it automatically.
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ratelimiter
+
+# --- Added later: Redis backing store for the Go rate-check service ----------
+#  redis:
+#    image: redis:7-alpine
+#    container_name: redis
+#    restart: unless-stopped
+#    command: ["redis-server", "--appendonly", "no"]
+#    ports:
+#      - "6379:6379"   # host-run Go service reaches it at localhost:6379
+#    networks:
+#      - ratelimiter
+# -----------------------------------------------------------------------------
+
+networks:
+  ratelimiter:
+    driver: bridge

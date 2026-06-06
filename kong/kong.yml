@@ -1,0 +1,54 @@
+# Kong DB-less declarative config.
+#
+# A single service points at https://example.com (the upstream). Before Kong
+# proxies, the pre-function plugin calls the Go rate-check service. On a 429 it
+# short-circuits; on a connection error it FAILS OPEN (HLD §7 default).
+_format_version: "3.0"
+
+services:
+  - name: example-upstream
+    url: https://example.com
+    routes:
+      - name: rate-check-route
+        paths:
+          - /
+        strip_path: false       # preserve the original path to example.com
+    plugins:
+      - name: pre-function
+        config:
+          access:
+            - |
+              -- Ask the rate-check service whether this request is allowed.
+              local http = require("resty.http")
+              local client = http.new()
+              client:set_timeout(500)  -- connect/send/read timeout (ms): fail fast
+
+              local res, err = client:request_uri(
+                "http://host.docker.internal:8080/api/rate-check",
+                {
+                  method = "GET",
+                  headers = {
+                    -- forward the caller identity the Go service reads
+                    ["x-api-key"] = kong.request.get_header("x-api-key") or "",
+                  },
+                }
+              )
+
+              if not res then
+                -- Rate-check service unreachable -> FAIL OPEN (allow). To fail
+                -- CLOSED instead, replace the two lines below with:
+                --   return kong.response.exit(503, { message = "rate-check unavailable" })
+                kong.log.err("rate-check unreachable, failing open: ", err)
+                return
+              end
+
+              if res.status == 429 then
+                return kong.response.exit(429, { message = "rate limit exceeded" })
+              end
+
+              if res.status ~= 200 then
+                kong.log.warn("unexpected rate-check status ", res.status, ", failing open")
+                return
+              end
+
+              -- allowed (200): fall through and let Kong proxy to example.com
